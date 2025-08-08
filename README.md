@@ -1,4 +1,4 @@
-# ai-flood-analysis repo
+# TideWatch ai-flood-analysis repo
 
 ## Motivation
 
