@@ -1,4 +1,4 @@
-# TideWatch ai-flood-analysis repo
+# TideWatch: AI-Flood-Analysis
 
 ## Motivation
 
@@ -7,7 +7,7 @@ Floods are among the most devastating natural disasters, impacting millions of l
 
 ## Project Overview
 
-**ai-flood-analysis** is a full-stack monorepo for flood risk assessment, prediction, and visualization. It combines a Python FastAPI backend (powered by Google's Gemini AI) and a modern Next.js frontend for an interactive, AI-driven user experience.
+**ai-flood-analysis** is a full-stack web app for flood risk assessment, prediction, and visualization. It combines a Python FastAPI backend (powered by Google's Gemini AI) and a modern Next.js frontend for an interactive, AI-driven user experience.
 
 ---
 
@@ -107,7 +107,6 @@ npm run dev
 - **Gemini AI Integration:** Uses Google's Gemini 2.5 Flash for intelligent analysis
 - **Coordinate & Image Analysis:** Analyze flood risk based on coordinates and/or images
 - **Combined Analysis:** Merge coordinate and image data for comprehensive assessment
-- **Simple & Fast:** No complex computer vision libraries, just pure AI analysis
 
 ### Running the Backend
 
@@ -140,7 +139,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 - **Coordinate & Image Analysis:** Enter coordinates or upload images for AI-powered assessment
 - **Interactive Map:** Visualize risk overlays
-- **Modern UI:** Built with Next.js, TypeScript, and shadcn/ui
+- **Modern UI:** Built with Next.js, TypeScript, and shadcn/ui components
 
 ### Running the Frontend
 
