@@ -7,7 +7,7 @@ Floods are among the most devastating natural disasters, impacting millions of l
 
 ## Project Overview
 
-**ai-flood-analysis** is a full-stack web app for flood risk assessment, prediction, and visualization. It combines a Python FastAPI backend (powered by Google's Gemini AI) and a modern Next.js frontend for an interactive, AI-driven user experience.
+**TideWatch** is a full-stack web app for flood risk assessment, prediction, and visualization. It combines a Python FastAPI backend (powered by Google's Gemini AI) and a modern Next.js frontend for an interactive, AI-driven user experience.
 
 ---
 
