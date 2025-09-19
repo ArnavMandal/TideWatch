@@ -5,7 +5,7 @@ from typing import Optional
 import uvicorn
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -13,7 +13,10 @@ import base64
 import io
 import json
 import re
+import hashlib
 from PIL import Image as PILImage
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import IndexModel, ASCENDING
 
 # Load environment variables
 load_dotenv()
@@ -25,9 +28,101 @@ logger = logging.getLogger(__name__)
 # Initialize Gemini AI
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# MongoDB setup
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+DATABASE_NAME = "flood_detection"
+CACHE_COLLECTION = "analysis_cache"
+
+# Global MongoDB client
+mongodb_client = None
+database = None
+cache_collection = None
+
+class MongoDBCache:
+    """MongoDB cache manager for analysis results"""
+    
+    def __init__(self, collection):
+        self.collection = collection
+        self.default_ttl = timedelta(hours=24)  # Cache expires after 24 hours
+    
+    async def initialize_indexes(self):
+        """Create indexes for optimal performance"""
+        try:
+            indexes = [
+                IndexModel([("cache_key", ASCENDING)], unique=True),
+                IndexModel([("created_at", ASCENDING)], expireAfterSeconds=86400),  # TTL index
+                IndexModel([("analysis_type", ASCENDING)]),
+            ]
+            await self.collection.create_indexes(indexes)
+            logger.info("MongoDB indexes created successfully")
+        except Exception as e:
+            logger.error(f"Error creating indexes: {e}")
+    
+    def generate_cache_key(self, analysis_type: str, data: str) -> str:
+        """Generate a unique cache key for the analysis"""
+        combined = f"{analysis_type}:{data}"
+        return hashlib.sha256(combined.encode()).hexdigest()
+    
+    def generate_image_hash(self, image_data: bytes) -> str:
+        """Generate hash for image data"""
+        return hashlib.sha256(image_data).hexdigest()
+    
+    async def get_cached_result(self, cache_key: str) -> Optional[dict]:
+        """Retrieve cached analysis result"""
+        try:
+            result = await self.collection.find_one({"cache_key": cache_key})
+            if result:
+                logger.info(f"Cache hit for key: {cache_key}")
+                # Remove MongoDB-specific fields
+                result.pop("_id", None)
+                result.pop("cache_key", None)
+                result.pop("created_at", None)
+                result.pop("analysis_type", None)
+                return result
+            else:
+                logger.info(f"Cache miss for key: {cache_key}")
+                return None
+        except Exception as e:
+            logger.error(f"Error retrieving from cache: {e}")
+            return None
+    
+    async def store_result(self, cache_key: str, analysis_type: str, result: dict):
+        """Store analysis result in cache"""
+        try:
+            cache_document = {
+                "cache_key": cache_key,
+                "analysis_type": analysis_type,
+                "created_at": datetime.utcnow(),
+                **result  # Spread the analysis result
+            }
+            
+            await self.collection.replace_one(
+                {"cache_key": cache_key},
+                cache_document,
+                upsert=True
+            )
+            logger.info(f"Result cached with key: {cache_key}")
+        except Exception as e:
+            logger.error(f"Error storing in cache: {e}")
+    
+    async def get_cache_stats(self) -> dict:
+        """Get cache statistics"""
+        try:
+            total_cached = await self.collection.count_documents({})
+            image_analyses = await self.collection.count_documents({"analysis_type": "image"})
+            
+            return {
+                "total_cached_analyses": total_cached,
+                "image_analyses": image_analyses,
+                "cache_hit_potential": "Enabled"
+            }
+        except Exception as e:
+            logger.error(f"Error getting cache stats: {e}")
+            return {"error": str(e)}
+
 app = FastAPI(
     title="Flood Detection API",
-    description="Simple flood risk assessment using Gemini AI",
+    description="Simple flood risk assessment using Gemini AI with MongoDB caching",
     version="1.0.0"
 )
 
@@ -53,6 +148,36 @@ class AnalysisResponse(BaseModel):
     elevation: float
     distance_from_water: float
     message: str
+
+# Initialize MongoDB connection
+@app.on_event("startup")
+async def startup_db_client():
+    """Initialize MongoDB connection on startup"""
+    global mongodb_client, database, cache_collection
+    try:
+        mongodb_client = AsyncIOMotorClient(MONGODB_URL)
+        database = mongodb_client[DATABASE_NAME]
+        cache_collection = database[CACHE_COLLECTION]
+        
+        # Test connection
+        await database.command("ping")
+        logger.info("Connected to MongoDB successfully")
+        
+        # Initialize cache manager and create indexes
+        cache_manager = MongoDBCache(cache_collection)
+        await cache_manager.initialize_indexes()
+        
+    except Exception as e:
+        logger.error(f"Error connecting to MongoDB: {e}")
+        logger.info("Continuing without cache functionality")
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    """Close MongoDB connection on shutdown"""
+    global mongodb_client
+    if mongodb_client:
+        mongodb_client.close()
+        logger.info("MongoDB connection closed")
 
 def parse_gemini_response(response_text: str) -> dict:
     """Parse Gemini AI response and extract structured data"""
@@ -94,26 +219,40 @@ def parse_gemini_response(response_text: str) -> dict:
 @app.get("/")
 async def root():
     """Health check endpoint"""
+    cache_status = "enabled" if cache_collection else "disabled"
     return {
-        "message": "Flood Detection API with Gemini AI",
+        "message": "Flood Detection API with Gemini AI and MongoDB Cache",
         "version": "1.0.0",
         "status": "healthy",
+        "cache_status": cache_status,
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
+    cache_status = "enabled" if cache_collection else "disabled"
     return {
         "status": "healthy",
         "ai_model": "Gemini 2.0 Flash",
+        "cache_status": cache_status,
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/api/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics - useful for monitoring"""
+    if cache_collection is None:
+        return {"error": "Cache not available"}
+    
+    cache_manager = MongoDBCache(cache_collection)
+    stats = await cache_manager.get_cache_stats()
+    return stats
 
 @app.post("/api/analyze/image")
 async def analyze_image(file: UploadFile = File(...)):
     """
-    Analyze flood risk based on uploaded image using Gemini AI
+    Analyze flood risk based on uploaded image using Gemini AI with caching
     """
     try:
         logger.info(f"Analyzing image: {file.filename}")
@@ -127,6 +266,22 @@ async def analyze_image(file: UploadFile = File(...)):
         
         # Read image data
         image_data = await file.read()
+        
+        # Initialize cache manager if available
+        cache_manager = None
+        cache_key = None
+        if cache_collection is not None:
+            cache_manager = MongoDBCache(cache_collection)
+            image_hash = cache_manager.generate_image_hash(image_data)
+            cache_key = cache_manager.generate_cache_key("image", image_hash)
+            
+            # Try to get cached result first
+            cached_result = await cache_manager.get_cached_result(cache_key)
+            if cached_result:
+                # Add cache indicator to response
+                cached_result["message"] = "Image analysis completed successfully using cached result"
+                cached_result["cached"] = True
+                return cached_result
         
         # Convert image to PIL Image for Gemini AI
         try:
@@ -170,12 +325,20 @@ async def analyze_image(file: UploadFile = File(...)):
             parsed_data = generate_image_risk_assessment()
             parsed_data["image_analysis"] = "Image analysis was not available, using simulated assessment"
         
-        return {
+        # Prepare response
+        analysis_result = {
             "success": True,
             **parsed_data,
             "ai_analysis": parsed_data.get("image_analysis", ""),
-            "message": "Image analysis completed successfully using Gemini AI"
+            "message": "Image analysis completed successfully using Gemini AI",
+            "cached": False
         }
+        
+        # Cache the result if cache is available
+        if cache_manager and cache_key:
+            await cache_manager.store_result(cache_key, "image", analysis_result)
+        
+        return analysis_result
         
     except Exception as e:
         logger.error(f"Error analyzing image: {str(e)}")
@@ -234,4 +397,4 @@ if __name__ == "__main__":
         port=port,
         reload=True,
         log_level="info"
-    ) 
+    )
